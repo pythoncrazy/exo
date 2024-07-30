@@ -83,7 +83,12 @@ CHIP_FLOPS = {
   "Nvidia GeForce RTX 3080 Ti": DeviceFlops(fp32=34.1 * TFLOPS, fp16=68.2 * TFLOPS, int8=136.4 * TFLOPS),
   "Nvidia GeForce RTX 3090": DeviceFlops(fp32=35.6 * TFLOPS, fp16=71.2 * TFLOPS, int8=142.4 * TFLOPS),
   "Nvidia GeForce RTX 3090 Ti": DeviceFlops(fp32=40.0 * TFLOPS, fp16=80.0 * TFLOPS, int8=160.0 * TFLOPS),
-  # ... add more devices if needed ...
+  ### Jetson Devices
+  # Jetson Xavier Series
+  # Taken from: https://www.techpowerup.com/gpu-specs/jetson-xavier-nx-8-gb.c3642
+  "Nvidia Jetson Xavier Nx" : DeviceFlops(fp32= 0.8448 * TFLOPS, fp16 = 1.69 * TFLOPS, int8 = 3.38 * TFLOPS),
+  # Jetson Nano
+  "Nvidia Jetson Nano" : DeviceFlops(fp32 = 0.236 * TFLOPS, fp16 = 0.472 * TFLOPS, int8 = 0.944 * TFLOPS),
   ### AMD GPUs
   # RX 6000 series
   "AMD Radeon RX 6900 XT": DeviceFlops(fp32=23.04 * TFLOPS, fp16=46.08 * TFLOPS, int8=92.16 * TFLOPS),
@@ -141,27 +146,53 @@ def mac_device_capabilities() -> DeviceCapabilities:
   return DeviceCapabilities(model=model_id, chip=chip_id, memory=memory, flops=CHIP_FLOPS.get(chip_id, DeviceFlops(fp32=0, fp16=0, int8=0)))
 
 
+
 def linux_device_capabilities() -> DeviceCapabilities:
   import psutil
   from tinygrad import Device
 
+  def _is_tegra():
+      # Taken from: https://github.com/rapidsai/dask-cuda/blob/d2d5e30cf55345a149741cb7dd0d5ebb21191564/dask_cuda/utils.py#L24
+      import os
+      return os.path.isdir("/sys/class/tegra-firmware/") or os.path.isfile(
+              "/etc/nv_tegra_release"
+          )
+
   if DEBUG >= 2: print(f"tinygrad {Device.DEFAULT=}")
   if Device.DEFAULT == "CUDA" or Device.DEFAULT == "NV" or Device.DEFAULT == "GPU":
-    import pynvml
+    if _is_tegra():
+        from ctypes import byref, c_size_t
+        import numba.cuda
 
-    pynvml.nvmlInit()
-    handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-    gpu_name = pynvml.nvmlDeviceGetName(handle)
-    gpu_memory_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        driver = numba.cuda.driver.Driver()
+        print(len(numba.cuda.gpus))
+        # numba.cuda.current_context()
+        free = c_size_t()
+        total = c_size_t()
+        driver.cuMemGetInfo(byref(free), byref(total))
+        memory = total.value // 2**20
+        return DeviceCapabilities(
+            model = f"Linux Box, Tegra",
+            chip = "Tegra",
+            memory = memory,
+            flops = DeviceFlops(fp32= 0.8448 * TFLOPS, fp16 = 1.69 * TFLOPS, int8 = 3.38 * TFLOPS)
+        )
+    else:
+        import pynvml
 
-    if DEBUG >= 2: print(f"NVIDIA device {gpu_name=} {gpu_memory_info=}")
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        gpu_name = pynvml.nvmlDeviceGetName(handle)
+        gpu_memory_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
 
-    return DeviceCapabilities(
-      model=f"Linux Box ({gpu_name})",
-      chip=gpu_name,
-      memory=gpu_memory_info.total // 2**20,
-      flops=CHIP_FLOPS.get(gpu_name, DeviceFlops(fp32=0, fp16=0, int8=0)),
-    )
+        if DEBUG >= 2: print(f"NVIDIA device {gpu_name=} {gpu_memory_info=}")
+
+        return DeviceCapabilities(
+        model=f"Linux Box ({gpu_name})",
+        chip=gpu_name,
+        memory=gpu_memory_info.total // 2**20,
+        flops=CHIP_FLOPS.get(gpu_name, DeviceFlops(fp32=0, fp16=0, int8=0)),
+        )
   elif Device.DEFAULT == "AMD":
     # TODO AMD support
     return DeviceCapabilities(
